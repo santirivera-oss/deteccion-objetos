@@ -1,0 +1,898 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Detector de Billetes MX - Full Auto + Orientaciones</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+    <style>
+        body {
+            background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
+            min-height: 100vh;
+        }
+        .glass {
+            background: rgba(30, 41, 59, 0.8);
+            backdrop-filter: blur(12px);
+            border: 1px solid rgba(99, 102, 241, 0.2);
+        }
+        #guia-billete {
+            position: absolute;
+            border: 3px dashed rgba(100, 116, 139, 0.5);
+            border-radius: 12px;
+            pointer-events: none;
+            transition: all 0.3s;
+        }
+        #guia-billete.detectado {
+            border-color: #22c55e;
+            border-style: solid;
+            box-shadow: 0 0 30px rgba(34, 197, 94, 0.3);
+        }
+        #guia-billete.analizando {
+            border-color: #f59e0b;
+            animation: pulse-border 1s infinite;
+        }
+        @keyframes pulse-border {
+            0%, 100% { box-shadow: 0 0 20px rgba(245, 158, 11, 0.3); }
+            50% { box-shadow: 0 0 40px rgba(245, 158, 11, 0.6); }
+        }
+        .esquina-indicator {
+            position: absolute;
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            background: rgba(245, 158, 11, 0.8);
+            opacity: 0;
+            transition: all 0.3s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 10px;
+            font-weight: bold;
+            z-index: 10;
+        }
+        .esquina-indicator.active {
+            opacity: 1;
+            animation: scan-pulse 0.5s ease-out;
+        }
+        .esquina-indicator.found {
+            background: rgba(34, 197, 94, 0.9);
+        }
+        .zona-busqueda {
+            position: absolute;
+            border: 2px solid rgba(6, 182, 212, 0.5);
+            background: rgba(6, 182, 212, 0.1);
+            border-radius: 4px;
+            pointer-events: none;
+            transition: all 0.3s;
+        }
+        .zona-busqueda.active {
+            border-color: #f59e0b;
+            background: rgba(245, 158, 11, 0.15);
+            box-shadow: 0 0 10px rgba(245, 158, 11, 0.3);
+        }
+        .zona-busqueda.found {
+            border-color: #22c55e;
+            background: rgba(34, 197, 94, 0.15);
+            box-shadow: 0 0 15px rgba(34, 197, 94, 0.4);
+        }
+        .zona-label {
+            position: absolute;
+            top: 2px;
+            left: 2px;
+            font-size: 9px;
+            background: rgba(0,0,0,0.6);
+            padding: 1px 4px;
+            border-radius: 2px;
+            color: #06b6d4;
+        }
+        .zona-busqueda.active .zona-label {
+            color: #f59e0b;
+        }
+        .zona-busqueda.found .zona-label {
+            color: #22c55e;
+        }
+        @keyframes scan-pulse {
+            0% { transform: scale(0.5); }
+            50% { transform: scale(1.3); }
+            100% { transform: scale(1); }
+        }
+        .status-bar {
+            transition: width 0.3s ease-out;
+        }
+        .resultado-flash {
+            animation: flash-in 0.5s ease-out;
+        }
+        @keyframes flash-in {
+            0% { transform: scale(0.8); opacity: 0; }
+            50% { transform: scale(1.1); }
+            100% { transform: scale(1); opacity: 1; }
+        }
+    </style>
+</head>
+<body class="text-white">
+    
+    <div class="container mx-auto px-4 py-6 max-w-6xl">
+        
+        <!-- Header -->
+        <header class="text-center mb-6">
+            <h1 class="text-3xl font-bold bg-gradient-to-r from-cyan-400 to-emerald-400 bg-clip-text text-transparent">
+                💵 Detector de Billetes MX
+            </h1>
+            <p class="text-slate-400 mt-1">Automático • Cualquier orientación ↻</p>
+        </header>
+        
+        <!-- Main Content -->
+        <div class="grid lg:grid-cols-3 gap-6">
+            
+            <!-- Video Section -->
+            <div class="lg:col-span-2">
+                <div class="glass rounded-2xl p-4">
+                    <div class="relative" id="video-container">
+                        <video id="video" autoplay playsinline class="w-full rounded-xl bg-black"></video>
+                        
+                        <!-- Guía del billete -->
+                        <div id="guia-billete">
+                            <div class="absolute inset-0 flex items-center justify-center">
+                                <span id="guia-texto" class="bg-black/60 px-4 py-2 rounded-lg text-sm text-slate-300">
+                                    Coloca un billete aquí (cualquier orientación)
+                                </span>
+                            </div>
+                        </div>
+                        
+                        <!-- Indicadores de esquinas -->
+                        <div id="esq-tl" class="esquina-indicator">1</div>
+                        <div id="esq-tr" class="esquina-indicator">2</div>
+                        <div id="esq-bl" class="esquina-indicator">3</div>
+                        <div id="esq-br" class="esquina-indicator">4</div>
+                        
+                        <!-- Zonas de búsqueda de números -->
+                        <div id="zona-tl" class="zona-busqueda"><span class="zona-label">1</span></div>
+                        <div id="zona-tr" class="zona-busqueda"><span class="zona-label">2</span></div>
+                        <div id="zona-bl" class="zona-busqueda"><span class="zona-label">3</span></div>
+                        <div id="zona-br" class="zona-busqueda"><span class="zona-label">4</span></div>
+                        
+                        <!-- Estado superior -->
+                        <div class="absolute top-3 left-3 right-3 flex items-center justify-between">
+                            <div class="flex items-center gap-2 px-3 py-1.5 rounded-full bg-black/70">
+                                <div id="estado-dot" class="w-2.5 h-2.5 rounded-full bg-slate-500"></div>
+                                <span id="estado-text" class="text-xs">Iniciando...</span>
+                            </div>
+                            <div id="fps-counter" class="px-3 py-1.5 rounded-full bg-black/70 text-xs text-slate-400">
+                                -- FPS
+                            </div>
+                        </div>
+                        
+                        <!-- Barra de estabilidad -->
+                        <div class="absolute bottom-3 left-3 right-3">
+                            <div class="bg-black/70 rounded-full p-2">
+                                <div class="flex items-center gap-3">
+                                    <span class="text-xs text-slate-400 whitespace-nowrap">Estabilidad:</span>
+                                    <div class="flex-1 bg-slate-700 rounded-full h-2">
+                                        <div id="estabilidad-barra" class="status-bar bg-cyan-500 h-2 rounded-full" style="width: 0%"></div>
+                                    </div>
+                                    <span id="estabilidad-texto" class="text-xs text-cyan-400 w-8">0%</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Controles manuales (opcional) -->
+                    <div class="flex items-center justify-between mt-4">
+                        <div class="flex items-center gap-2">
+                            <span class="text-xs text-slate-500">Modo:</span>
+                            <button onclick="toggleModo()" id="btn-modo" 
+                                    class="px-3 py-1.5 bg-emerald-500/20 text-emerald-400 rounded-lg text-xs font-medium">
+                                🤖 Automático
+                            </button>
+                        </div>
+                        <button onclick="detectarManual()" id="btn-manual" 
+                                class="px-4 py-2 bg-cyan-600 hover:bg-cyan-500 rounded-lg text-sm transition-all">
+                            📸 Capturar (ESPACIO)
+                        </button>
+                    </div>
+                </div>
+                
+                <!-- Debug (colapsable) -->
+                <details class="glass rounded-2xl mt-4">
+                    <summary class="p-4 cursor-pointer text-slate-400 text-sm hover:text-slate-300">
+                        🔧 Debug (clic para expandir)
+                    </summary>
+                    <div class="p-4 pt-0">
+                        <div class="grid grid-cols-4 gap-2" id="debug-esquinas">
+                            <div class="text-center text-xs text-slate-500">Sup-Izq</div>
+                            <div class="text-center text-xs text-slate-500">Sup-Der</div>
+                            <div class="text-center text-xs text-slate-500">Inf-Izq</div>
+                            <div class="text-center text-xs text-slate-500">Inf-Der</div>
+                            <canvas id="dbg-tl" class="w-full rounded bg-slate-800"></canvas>
+                            <canvas id="dbg-tr" class="w-full rounded bg-slate-800"></canvas>
+                            <canvas id="dbg-bl" class="w-full rounded bg-slate-800"></canvas>
+                            <canvas id="dbg-br" class="w-full rounded bg-slate-800"></canvas>
+                            <div id="txt-tl" class="text-center text-xs text-slate-500 truncate">—</div>
+                            <div id="txt-tr" class="text-center text-xs text-slate-500 truncate">—</div>
+                            <div id="txt-bl" class="text-center text-xs text-slate-500 truncate">—</div>
+                            <div id="txt-br" class="text-center text-xs text-slate-500 truncate">—</div>
+                        </div>
+                    </div>
+                </details>
+            </div>
+            
+            <!-- Panel Derecho -->
+            <div class="space-y-4">
+                
+                <!-- Resultado Principal -->
+                <div class="glass rounded-2xl p-6">
+                    <div id="resultado-contenido" class="text-center py-6">
+                        <div class="text-6xl mb-4">💵</div>
+                        <p class="text-slate-400">Esperando billete...</p>
+                    </div>
+                </div>
+                
+                <!-- Historial -->
+                <div class="glass rounded-2xl p-4">
+                    <h3 class="text-sm font-semibold text-slate-400 mb-3">Historial</h3>
+                    <div id="historial" class="space-y-2 max-h-40 overflow-y-auto">
+                        <p class="text-slate-600 text-xs text-center py-2">Sin detecciones</p>
+                    </div>
+                </div>
+                
+                <!-- Total -->
+                <div class="glass rounded-2xl p-4">
+                    <h3 class="text-sm font-semibold text-slate-400 mb-2">Total Acumulado</h3>
+                    <div class="text-3xl font-bold text-emerald-400" id="total-acumulado">$0</div>
+                    <button onclick="resetTotal()" class="text-xs text-slate-500 hover:text-slate-400 mt-1">🔄 Reset</button>
+                </div>
+                
+                <!-- Orientaciones soportadas -->
+                <div class="glass rounded-2xl p-4">
+                    <h3 class="text-sm font-semibold text-slate-400 mb-2">Orientaciones</h3>
+                    <div class="grid grid-cols-4 gap-1 text-center text-xs">
+                        <div class="p-1 bg-slate-800/50 rounded">0°</div>
+                        <div class="p-1 bg-slate-800/50 rounded">90°</div>
+                        <div class="p-1 bg-slate-800/50 rounded">180°</div>
+                        <div class="p-1 bg-slate-800/50 rounded">270°</div>
+                    </div>
+                    <p class="text-xs text-slate-600 mt-2">También detecta: 005→500</p>
+                </div>
+                
+                <!-- Instrucciones -->
+                <div class="glass rounded-2xl p-4">
+                    <h3 class="text-sm font-semibold text-slate-400 mb-2">Cómo funciona</h3>
+                    <ol class="text-xs text-slate-500 space-y-1">
+                        <li>1. Coloca el billete (cualquier orientación)</li>
+                        <li>2. Mantén quieto ~1 segundo</li>
+                        <li>3. ¡Detecta automáticamente!</li>
+                    </ol>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <canvas id="canvas" class="hidden"></canvas>
+    
+    <script>
+    // ============================================
+    // CONFIGURACIÓN
+    // ============================================
+    const CONFIG = {
+        // Área del billete
+        billeteArea: { x: 0.1, y: 0.12, width: 0.8, height: 0.76 },
+        
+        // Esquinas
+        esquinaSize: { width: 0.22, height: 0.28 },
+        
+        // Detección automática
+        umbralEstabilidad: 8,        // Diferencia máxima entre frames
+        framesEstables: 15,          // Frames estables necesarios (~0.5s a 30fps)
+        cooldownDeteccion: 2000,     // ms después de detectar antes de volver a analizar
+        
+        // OCR
+        denominaciones: ['1000', '500', '200', '100', '50', '20'],
+        
+        colores: {
+            '20': { bg: 'bg-blue-500/20', text: 'text-blue-400', color: '#3b82f6' },
+            '50': { bg: 'bg-pink-500/20', text: 'text-pink-400', color: '#ec4899' },
+            '100': { bg: 'bg-orange-500/20', text: 'text-orange-400', color: '#f97316' },
+            '200': { bg: 'bg-green-500/20', text: 'text-green-400', color: '#22c55e' },
+            '500': { bg: 'bg-cyan-500/20', text: 'text-cyan-400', color: '#06b6d4' },
+            '1000': { bg: 'bg-purple-500/20', text: 'text-purple-400', color: '#a855f7' }
+        }
+    };
+    
+    // ============================================
+    // ESTADO
+    // ============================================
+    let video, canvas, ctx;
+    let worker = null;
+    let modoAutomatico = true;
+    let detectando = false;
+    let frameAnterior = null;
+    let contadorEstable = 0;
+    let ultimaDeteccion = 0;
+    let historial = [];
+    let totalAcumulado = 0;
+    
+    // FPS counter
+    let frameCount = 0;
+    let lastFpsUpdate = Date.now();
+    let fps = 0;
+    
+    // ============================================
+    // INICIALIZACIÓN
+    // ============================================
+    document.addEventListener('DOMContentLoaded', async () => {
+        video = document.getElementById('video');
+        canvas = document.getElementById('canvas');
+        ctx = canvas.getContext('2d');
+        
+        await iniciarCamara();
+        await iniciarOCR();
+        
+        // Iniciar loop de detección
+        requestAnimationFrame(loopDeteccion);
+        
+        // Tecla espacio para manual
+        document.addEventListener('keydown', (e) => {
+            if (e.code === 'Space') {
+                e.preventDefault();
+                detectarManual();
+            }
+        });
+    });
+    
+    async function iniciarCamara() {
+        try {
+            actualizarEstado('Cámara...', 'yellow');
+            
+            const stream = await navigator.mediaDevices.getUserMedia({
+                video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: 'environment' }
+            });
+            
+            video.srcObject = stream;
+            
+            video.onloadedmetadata = () => {
+                canvas.width = video.videoWidth;
+                canvas.height = video.videoHeight;
+                posicionarElementos();
+            };
+            
+        } catch (error) {
+            actualizarEstado('Error cámara', 'red');
+        }
+    }
+    
+    async function iniciarOCR() {
+        try {
+            actualizarEstado('Cargando OCR...', 'yellow');
+            
+            worker = await Tesseract.createWorker('eng', 1);
+            
+            await worker.setParameters({
+                tessedit_char_whitelist: '0123456789',
+                tessedit_pageseg_mode: Tesseract.PSM.SINGLE_WORD
+            });
+            
+            actualizarEstado('Listo', 'green');
+            
+        } catch (error) {
+            actualizarEstado('Error OCR', 'red');
+        }
+    }
+    
+    function posicionarElementos() {
+        const rect = video.getBoundingClientRect();
+        const area = CONFIG.billeteArea;
+        const esq = CONFIG.esquinaSize;
+        
+        // Guía principal
+        const guia = document.getElementById('guia-billete');
+        const gx = rect.width * area.x;
+        const gy = rect.height * area.y;
+        const gw = rect.width * area.width;
+        const gh = rect.height * area.height;
+        
+        guia.style.left = gx + 'px';
+        guia.style.top = gy + 'px';
+        guia.style.width = gw + 'px';
+        guia.style.height = gh + 'px';
+        
+        // Tamaño de zonas de búsqueda
+        const ew = gw * esq.width;
+        const eh = gh * esq.height;
+        
+        // Posiciones de las 4 esquinas
+        const posiciones = {
+            'tl': { left: gx, top: gy },
+            'tr': { left: gx + gw - ew, top: gy },
+            'bl': { left: gx, top: gy + gh - eh },
+            'br': { left: gx + gw - ew, top: gy + gh - eh }
+        };
+        
+        // Posicionar indicadores (círculos pequeños)
+        for (const [id, pos] of Object.entries(posiciones)) {
+            const el = document.getElementById('esq-' + id);
+            el.style.left = (pos.left + ew/2 - 10) + 'px';
+            el.style.top = (pos.top + eh/2 - 10) + 'px';
+        }
+        
+        // Posicionar zonas de búsqueda (rectángulos)
+        for (const [id, pos] of Object.entries(posiciones)) {
+            const zona = document.getElementById('zona-' + id);
+            zona.style.left = pos.left + 'px';
+            zona.style.top = pos.top + 'px';
+            zona.style.width = ew + 'px';
+            zona.style.height = eh + 'px';
+        }
+    }
+    
+    // ============================================
+    // LOOP DE DETECCIÓN AUTOMÁTICA
+    // ============================================
+    function loopDeteccion() {
+        if (!video.videoWidth) {
+            requestAnimationFrame(loopDeteccion);
+            return;
+        }
+        
+        // FPS
+        frameCount++;
+        const now = Date.now();
+        if (now - lastFpsUpdate >= 1000) {
+            fps = frameCount;
+            frameCount = 0;
+            lastFpsUpdate = now;
+            document.getElementById('fps-counter').textContent = fps + ' FPS';
+        }
+        
+        // Capturar frame
+        ctx.drawImage(video, 0, 0);
+        
+        // Solo en modo automático y si no está detectando
+        if (modoAutomatico && !detectando && worker) {
+            // Verificar cooldown
+            if (now - ultimaDeteccion > CONFIG.cooldownDeteccion) {
+                verificarEstabilidad();
+            } else {
+                // En cooldown
+                const remaining = CONFIG.cooldownDeteccion - (now - ultimaDeteccion);
+                actualizarEstado(`Espera ${Math.ceil(remaining/1000)}s...`, 'yellow');
+                actualizarBarraEstabilidad(0);
+            }
+        }
+        
+        requestAnimationFrame(loopDeteccion);
+    }
+    
+    function verificarEstabilidad() {
+        // Extraer zona central del billete para comparar
+        const area = CONFIG.billeteArea;
+        const cx = Math.floor(canvas.width * (area.x + area.width * 0.3));
+        const cy = Math.floor(canvas.height * (area.y + area.height * 0.3));
+        const cw = Math.floor(canvas.width * area.width * 0.4);
+        const ch = Math.floor(canvas.height * area.height * 0.4);
+        
+        const imageData = ctx.getImageData(cx, cy, cw, ch);
+        const frameActual = calcularHash(imageData.data);
+        
+        if (frameAnterior !== null) {
+            const diferencia = Math.abs(frameActual - frameAnterior);
+            
+            if (diferencia < CONFIG.umbralEstabilidad) {
+                contadorEstable++;
+                
+                const progreso = Math.min(100, (contadorEstable / CONFIG.framesEstables) * 100);
+                actualizarBarraEstabilidad(progreso);
+                
+                if (contadorEstable >= CONFIG.framesEstables) {
+                    // ¡Estable! Iniciar detección
+                    actualizarEstado('Detectando...', 'yellow');
+                    document.getElementById('guia-billete').classList.add('detectado');
+                    iniciarDeteccionAutomatica();
+                    contadorEstable = 0;
+                } else {
+                    actualizarEstado('Estabilizando...', 'cyan');
+                }
+            } else {
+                // Movimiento detectado
+                contadorEstable = Math.max(0, contadorEstable - 2);
+                actualizarBarraEstabilidad((contadorEstable / CONFIG.framesEstables) * 100);
+                actualizarEstado('Esperando...', 'green');
+                document.getElementById('guia-billete').classList.remove('detectado');
+            }
+        }
+        
+        frameAnterior = frameActual;
+    }
+    
+    function calcularHash(data) {
+        // Hash simple: promedio de valores
+        let sum = 0;
+        for (let i = 0; i < data.length; i += 40) {
+            sum += data[i];
+        }
+        return sum / (data.length / 40);
+    }
+    
+    // ============================================
+    // DETECCIÓN OCR
+    // ============================================
+    async function iniciarDeteccionAutomatica() {
+        if (detectando) return;
+        detectando = true;
+        
+        document.getElementById('guia-billete').classList.add('analizando');
+        document.getElementById('guia-texto').textContent = 'Analizando...';
+        
+        // Reset indicadores
+        document.querySelectorAll('.esquina-indicator').forEach(el => {
+            el.classList.remove('active', 'found');
+        });
+        document.querySelectorAll('.zona-busqueda').forEach(el => {
+            el.classList.remove('active', 'found');
+        });
+        
+        try {
+            const resultado = await analizarEsquinas();
+            
+            if (resultado.denominacion) {
+                mostrarResultadoExitoso(resultado.denominacion, resultado.esquina, resultado.rotacion);
+                ultimaDeteccion = Date.now();
+            } else {
+                mostrarResultadoFallido();
+                ultimaDeteccion = Date.now() - CONFIG.cooldownDeteccion + 500; // Reintentar más rápido
+            }
+            
+        } catch (error) {
+            console.error('Error:', error);
+        }
+        
+        document.getElementById('guia-billete').classList.remove('analizando', 'detectado');
+        document.getElementById('guia-texto').textContent = 'Coloca un billete aquí (cualquier orientación)';
+        detectando = false;
+    }
+    
+    async function analizarEsquinas() {
+        const area = CONFIG.billeteArea;
+        const esq = CONFIG.esquinaSize;
+        
+        const bx = Math.floor(canvas.width * area.x);
+        const by = Math.floor(canvas.height * area.y);
+        const bw = Math.floor(canvas.width * area.width);
+        const bh = Math.floor(canvas.height * area.height);
+        const ew = Math.floor(bw * esq.width);
+        const eh = Math.floor(bh * esq.height);
+        
+        const esquinas = [
+            { id: 'tl', x: bx, y: by },
+            { id: 'tr', x: bx + bw - ew, y: by },
+            { id: 'bl', x: bx, y: by + bh - eh },
+            { id: 'br', x: bx + bw - ew, y: by + bh - eh }
+        ];
+        
+        let denominacionEncontrada = null;
+        let esquinaEncontrada = null;
+        let rotacionEncontrada = 0;
+        
+        for (const esqData of esquinas) {
+            // Activar indicador y zona
+            document.getElementById('esq-' + esqData.id).classList.add('active');
+            document.getElementById('zona-' + esqData.id).classList.add('active');
+            
+            // Extraer esquina
+            const tempCanvas = document.createElement('canvas');
+            tempCanvas.width = ew;
+            tempCanvas.height = eh;
+            const tempCtx = tempCanvas.getContext('2d');
+            tempCtx.drawImage(canvas, esqData.x, esqData.y, ew, eh, 0, 0, ew, eh);
+            
+            // Guardar imagen original para rotaciones
+            const imagenOriginal = tempCtx.getImageData(0, 0, ew, eh);
+            
+            // Probar todas las rotaciones: 0°, 90°, 180°, 270°
+            const rotaciones = [0, 90, 180, 270];
+            let textoMejor = '';
+            let denomMejor = null;
+            let rotMejor = 0;
+            
+            for (const rot of rotaciones) {
+                // Restaurar imagen original
+                tempCtx.putImageData(imagenOriginal, 0, 0);
+                
+                // Aplicar rotación si es necesario
+                if (rot > 0) {
+                    rotarCanvas(tempCtx, ew, eh, rot);
+                }
+                
+                // Preprocesar (binarizar)
+                preprocesarImagen(tempCtx, ew, eh);
+                
+                // OCR
+                const resultado = await worker.recognize(tempCanvas);
+                const texto = resultado.data.text.trim();
+                
+                // Buscar denominación (normal e invertida)
+                const denom = extraerDenominacion(texto);
+                
+                if (denom) {
+                    textoMejor = texto;
+                    denomMejor = denom;
+                    rotMejor = rot;
+                    break; // Encontramos algo, no seguir rotando
+                }
+                
+                // Guardar el primer texto no vacío para debug
+                if (texto && !textoMejor) {
+                    textoMejor = texto;
+                }
+            }
+            
+            // Debug: mostrar mejor resultado de esta esquina
+            const dbgCanvas = document.getElementById('dbg-' + esqData.id);
+            if (dbgCanvas) {
+                // Mostrar la imagen con la rotación ganadora
+                tempCtx.putImageData(imagenOriginal, 0, 0);
+                if (rotMejor > 0) {
+                    rotarCanvas(tempCtx, ew, eh, rotMejor);
+                }
+                preprocesarImagen(tempCtx, ew, eh);
+                dbgCanvas.width = ew;
+                dbgCanvas.height = eh;
+                dbgCanvas.getContext('2d').drawImage(tempCanvas, 0, 0);
+            }
+            
+            const txtEl = document.getElementById('txt-' + esqData.id);
+            if (txtEl) {
+                txtEl.textContent = textoMejor ? `${textoMejor}${rotMejor > 0 ? ' ↻'+rotMejor+'°' : ''}` : '—';
+            }
+            
+            // Si encontramos denominación válida
+            if (denomMejor && !denominacionEncontrada) {
+                denominacionEncontrada = denomMejor;
+                esquinaEncontrada = esqData.id;
+                rotacionEncontrada = rotMejor;
+                document.getElementById('esq-' + esqData.id).classList.add('found');
+                document.getElementById('zona-' + esqData.id).classList.add('found');
+                
+                if (txtEl) txtEl.className = 'text-center text-xs text-green-400 font-bold truncate';
+            }
+            
+            // Quitar active de la zona después de analizarla (si no fue found)
+            if (!denomMejor) {
+                document.getElementById('zona-' + esqData.id).classList.remove('active');
+            }
+            
+            await new Promise(r => setTimeout(r, 30));
+        }
+        
+        return { 
+            denominacion: denominacionEncontrada, 
+            esquina: esquinaEncontrada,
+            rotacion: rotacionEncontrada
+        };
+    }
+    
+    // ============================================
+    // FUNCIONES DE ROTACIÓN
+    // ============================================
+    function rotarCanvas(ctx, w, h, grados) {
+        const imageData = ctx.getImageData(0, 0, w, h);
+        const data = imageData.data;
+        
+        let nuevoW = w, nuevoH = h;
+        if (grados === 90 || grados === 270) {
+            nuevoW = h;
+            nuevoH = w;
+        }
+        
+        const rotated = new Uint8ClampedArray(data.length);
+        
+        for (let y = 0; y < h; y++) {
+            for (let x = 0; x < w; x++) {
+                const srcIdx = (y * w + x) * 4;
+                let dstX, dstY;
+                
+                switch (grados) {
+                    case 90:
+                        dstX = h - 1 - y;
+                        dstY = x;
+                        break;
+                    case 180:
+                        dstX = w - 1 - x;
+                        dstY = h - 1 - y;
+                        break;
+                    case 270:
+                        dstX = y;
+                        dstY = w - 1 - x;
+                        break;
+                    default:
+                        dstX = x;
+                        dstY = y;
+                }
+                
+                const dstIdx = (dstY * nuevoW + dstX) * 4;
+                rotated[dstIdx] = data[srcIdx];
+                rotated[dstIdx + 1] = data[srcIdx + 1];
+                rotated[dstIdx + 2] = data[srcIdx + 2];
+                rotated[dstIdx + 3] = data[srcIdx + 3];
+            }
+        }
+        
+        // Si las dimensiones cambian, ajustar canvas
+        if (grados === 90 || grados === 270) {
+            ctx.canvas.width = nuevoW;
+            ctx.canvas.height = nuevoH;
+        }
+        
+        ctx.putImageData(new ImageData(rotated, nuevoW, nuevoH), 0, 0);
+    }
+    
+    function preprocesarImagen(ctx, w, h) {
+        // Obtener dimensiones actuales (pueden haber cambiado por rotación)
+        const actualW = ctx.canvas.width;
+        const actualH = ctx.canvas.height;
+        
+        const imageData = ctx.getImageData(0, 0, actualW, actualH);
+        const data = imageData.data;
+        
+        for (let i = 0; i < data.length; i += 4) {
+            const gris = data[i] * 0.299 + data[i+1] * 0.587 + data[i+2] * 0.114;
+            const valor = gris > 130 ? 255 : 0;
+            data[i] = valor;
+            data[i+1] = valor;
+            data[i+2] = valor;
+        }
+        
+        ctx.putImageData(imageData, 0, 0);
+    }
+    
+    function extraerDenominacion(texto) {
+        // Limpiar: solo números
+        let numeros = texto.replace(/\D/g, '');
+        
+        // Correcciones OCR comunes
+        const corregido = texto
+            .replace(/[oO]/g, '0')
+            .replace(/[lI]/g, '1')
+            .replace(/[sS]/g, '5')
+            .replace(/[zZ]/g, '2')
+            .replace(/\D/g, '');
+        
+        // 1. Buscar normal
+        for (const denom of CONFIG.denominaciones) {
+            if (numeros.includes(denom) || corregido.includes(denom)) {
+                return denom;
+            }
+        }
+        
+        // 2. Buscar invertido (espejo): 005 → 500, 002 → 200, etc.
+        const invertido = numeros.split('').reverse().join('');
+        const invertidoCorr = corregido.split('').reverse().join('');
+        
+        for (const denom of CONFIG.denominaciones) {
+            if (invertido.includes(denom) || invertidoCorr.includes(denom)) {
+                return denom;
+            }
+        }
+        
+        return null;
+    }
+    
+    // ============================================
+    // DETECCIÓN MANUAL
+    // ============================================
+    function detectarManual() {
+        if (detectando || !worker) return;
+        
+        // Llamar directamente a la detección
+        actualizarEstado('Capturando...', 'yellow');
+        document.getElementById('guia-billete').classList.add('detectado');
+        iniciarDeteccionAutomatica();
+    }
+    
+    function toggleModo() {
+        modoAutomatico = !modoAutomatico;
+        const btn = document.getElementById('btn-modo');
+        
+        if (modoAutomatico) {
+            btn.textContent = '🤖 Automático';
+            btn.className = 'px-3 py-1.5 bg-emerald-500/20 text-emerald-400 rounded-lg text-xs font-medium';
+        } else {
+            btn.textContent = '👆 Manual';
+            btn.className = 'px-3 py-1.5 bg-amber-500/20 text-amber-400 rounded-lg text-xs font-medium';
+        }
+    }
+    
+    // ============================================
+    // UI
+    // ============================================
+    function actualizarEstado(texto, color) {
+        document.getElementById('estado-text').textContent = texto;
+        const dot = document.getElementById('estado-dot');
+        dot.className = 'w-2.5 h-2.5 rounded-full';
+        
+        const colores = {
+            green: 'bg-green-500',
+            yellow: 'bg-yellow-500',
+            red: 'bg-red-500',
+            cyan: 'bg-cyan-500'
+        };
+        dot.classList.add(colores[color] || 'bg-slate-500');
+    }
+    
+    function actualizarBarraEstabilidad(pct) {
+        const barra = document.getElementById('estabilidad-barra');
+        const texto = document.getElementById('estabilidad-texto');
+        
+        barra.style.width = pct + '%';
+        texto.textContent = Math.round(pct) + '%';
+        
+        if (pct >= 80) {
+            barra.className = 'status-bar bg-green-500 h-2 rounded-full';
+        } else if (pct >= 50) {
+            barra.className = 'status-bar bg-yellow-500 h-2 rounded-full';
+        } else {
+            barra.className = 'status-bar bg-cyan-500 h-2 rounded-full';
+        }
+    }
+    
+    function mostrarResultadoExitoso(denominacion, esquina, rotacion) {
+        const info = CONFIG.colores[denominacion];
+        const contenido = document.getElementById('resultado-contenido');
+        
+        const rotTexto = rotacion > 0 ? ` (↻${rotacion}°)` : '';
+        
+        contenido.innerHTML = `
+            <div class="resultado-flash">
+                <div class="text-6xl font-bold mb-3" style="color: ${info.color}">
+                    $${denominacion}
+                </div>
+                <p class="text-green-400 font-bold">✓ Detectado${rotTexto}</p>
+            </div>
+        `;
+        
+        // Agregar al historial y total
+        agregarHistorial(denominacion);
+        totalAcumulado += parseInt(denominacion);
+        document.getElementById('total-acumulado').textContent = '$' + totalAcumulado.toLocaleString();
+    }
+    
+    function mostrarResultadoFallido() {
+        const contenido = document.getElementById('resultado-contenido');
+        contenido.innerHTML = `
+            <div class="text-4xl mb-3">🤔</div>
+            <p class="text-slate-400 text-sm">No detectado, reintentando...</p>
+        `;
+    }
+    
+    function agregarHistorial(denom) {
+        const hora = new Date().toLocaleTimeString('es-MX', { 
+            hour: '2-digit', minute: '2-digit', second: '2-digit' 
+        });
+        
+        historial.unshift({ denom, hora });
+        if (historial.length > 10) historial.pop();
+        
+        const container = document.getElementById('historial');
+        container.innerHTML = historial.map(item => {
+            const info = CONFIG.colores[item.denom];
+            return `
+                <div class="flex items-center justify-between p-2 ${info.bg} rounded-lg">
+                    <span class="${info.text} font-bold text-sm">$${item.denom}</span>
+                    <span class="text-slate-500 text-xs">${item.hora}</span>
+                </div>
+            `;
+        }).join('');
+    }
+    
+    function resetTotal() {
+        totalAcumulado = 0;
+        document.getElementById('total-acumulado').textContent = '$0';
+        historial = [];
+        document.getElementById('historial').innerHTML = '<p class="text-slate-600 text-xs text-center py-2">Sin detecciones</p>';
+    }
+    
+    window.addEventListener('resize', posicionarElementos);
+    </script>
+    
+</body>
+</html>
