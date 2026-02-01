@@ -1,0 +1,509 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Detector Billetes - Debug Zonas</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+    <style>
+        * { -webkit-tap-highlight-color: transparent; }
+        body {
+            background: #0f172a;
+            min-height: 100vh;
+        }
+        .glass {
+            background: rgba(30, 41, 59, 0.8);
+            backdrop-filter: blur(12px);
+            border: 1px solid rgba(99, 102, 241, 0.2);
+        }
+        #guia-billete {
+            position: absolute;
+            border: 3px dashed rgba(100, 116, 139, 0.5);
+            border-radius: 8px;
+            pointer-events: none;
+        }
+        .zona-busqueda {
+            position: absolute;
+            border: 3px solid #06b6d4;
+            background: rgba(6, 182, 212, 0.15);
+            border-radius: 4px;
+            pointer-events: none;
+        }
+        .zona-busqueda.analizando {
+            border-color: #f59e0b;
+            background: rgba(245, 158, 11, 0.2);
+            animation: pulse 0.5s infinite;
+        }
+        .zona-busqueda.found {
+            border-color: #22c55e;
+            background: rgba(34, 197, 94, 0.3);
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        .zona-label {
+            position: absolute;
+            top: -20px;
+            left: 0;
+            font-size: 11px;
+            background: #000;
+            padding: 2px 6px;
+            border-radius: 4px;
+            color: #06b6d4;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body class="text-white p-2">
+    
+    <h1 class="text-xl font-bold text-center text-cyan-400 mb-2">🔍 Debug - Detector Billetes</h1>
+    
+    <!-- Video -->
+    <div class="glass rounded-xl p-2 mb-3">
+        <div class="relative" id="video-container">
+            <video id="video" autoplay playsinline class="w-full rounded-lg bg-black"></video>
+            
+            <div id="guia-billete"></div>
+            
+            <!-- Zonas con labels -->
+            <div id="zona-tl" class="zona-busqueda"><span class="zona-label">1: Sup-Izq</span></div>
+            <div id="zona-tr" class="zona-busqueda"><span class="zona-label">2: Sup-Der</span></div>
+            <div id="zona-bl" class="zona-busqueda"><span class="zona-label">3: Inf-Izq</span></div>
+            <div id="zona-br" class="zona-busqueda"><span class="zona-label">4: Inf-Der</span></div>
+            
+            <!-- Info de dimensiones -->
+            <div class="absolute bottom-1 left-1 text-xs bg-black/80 px-2 py-1 rounded">
+                <span id="info-dims">--</span>
+            </div>
+        </div>
+        
+        <button onclick="detectar()" id="btn-detectar"
+                class="w-full mt-3 py-4 bg-cyan-600 hover:bg-cyan-500 rounded-xl text-lg font-bold">
+            📸 DETECTAR (ver qué captura)
+        </button>
+    </div>
+    
+    <!-- Debug: Qué capturó en cada zona -->
+    <div class="glass rounded-xl p-3 mb-3">
+        <h2 class="text-sm font-bold text-slate-400 mb-2">📷 Lo que captura en cada zona:</h2>
+        <div class="grid grid-cols-2 gap-2">
+            <div class="text-center">
+                <p class="text-xs text-slate-500 mb-1">1: Sup-Izq</p>
+                <canvas id="dbg-tl" class="w-full border border-slate-600 rounded bg-white"></canvas>
+                <p id="txt-tl" class="text-xs text-cyan-400 mt-1 truncate">--</p>
+            </div>
+            <div class="text-center">
+                <p class="text-xs text-slate-500 mb-1">2: Sup-Der</p>
+                <canvas id="dbg-tr" class="w-full border border-slate-600 rounded bg-white"></canvas>
+                <p id="txt-tr" class="text-xs text-cyan-400 mt-1 truncate">--</p>
+            </div>
+            <div class="text-center">
+                <p class="text-xs text-slate-500 mb-1">3: Inf-Izq</p>
+                <canvas id="dbg-bl" class="w-full border border-slate-600 rounded bg-white"></canvas>
+                <p id="txt-bl" class="text-xs text-cyan-400 mt-1 truncate">--</p>
+            </div>
+            <div class="text-center">
+                <p class="text-xs text-slate-500 mb-1">4: Inf-Der</p>
+                <canvas id="dbg-br" class="w-full border border-slate-600 rounded bg-white"></canvas>
+                <p id="txt-br" class="text-xs text-cyan-400 mt-1 truncate">--</p>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Resultado -->
+    <div class="glass rounded-xl p-4 text-center">
+        <p class="text-sm text-slate-400 mb-2">Resultado:</p>
+        <div id="resultado" class="text-3xl font-bold text-slate-500">--</div>
+    </div>
+    
+    <!-- Info técnica -->
+    <div class="glass rounded-xl p-3 mt-3 text-xs text-slate-500">
+        <p><strong>¿Qué revisar?</strong></p>
+        <ul class="mt-1 space-y-1">
+            <li>• Los cuadros cyan deben estar en las esquinas del billete</li>
+            <li>• Al detectar, abajo verás exactamente qué imagen captura</li>
+            <li>• El número debe verse GRANDE y CLARO en la imagen capturada</li>
+        </ul>
+    </div>
+    
+    <canvas id="canvas" class="hidden"></canvas>
+    
+    <script>
+    // ============================================
+    // CONFIGURACIÓN - AJUSTABLE
+    // ============================================
+    const CONFIG = {
+        // Área donde debe estar el billete (% del video)
+        billeteArea: { 
+            x: 0.05,      // 5% desde izquierda
+            y: 0.10,      // 10% desde arriba  
+            width: 0.90,  // 90% del ancho
+            height: 0.80  // 80% del alto
+        },
+        
+        // Tamaño de cada zona de búsqueda (% del área del billete)
+        esquinaSize: { 
+            width: 0.25,   // 25% del ancho del billete
+            height: 0.30   // 30% del alto del billete
+        },
+        
+        denominaciones: ['1000', '500', '200', '100', '50', '20'],
+    };
+    
+    // ============================================
+    // ESTADO
+    // ============================================
+    let video, canvas, ctx;
+    let worker = null;
+    let detectando = false;
+    
+    // ============================================
+    // INICIALIZACIÓN
+    // ============================================
+    document.addEventListener('DOMContentLoaded', async () => {
+        video = document.getElementById('video');
+        canvas = document.getElementById('canvas');
+        ctx = canvas.getContext('2d');
+        
+        await iniciarCamara();
+        await iniciarOCR();
+        
+        // Actualizar video continuamente
+        function loop() {
+            if (video.videoWidth) {
+                ctx.drawImage(video, 0, 0);
+            }
+            requestAnimationFrame(loop);
+        }
+        loop();
+        
+        document.addEventListener('keydown', (e) => {
+            if (e.code === 'Space') {
+                e.preventDefault();
+                detectar();
+            }
+        });
+    });
+    
+    async function iniciarCamara() {
+        try {
+            // Pedir cámara trasera en móvil
+            const stream = await navigator.mediaDevices.getUserMedia({
+                video: { 
+                    width: { ideal: 1280 }, 
+                    height: { ideal: 720 }, 
+                    facingMode: { ideal: 'environment' }  // Cámara trasera
+                }
+            });
+            
+            video.srcObject = stream;
+            
+            video.onloadedmetadata = () => {
+                // Canvas con las dimensiones reales del video
+                canvas.width = video.videoWidth;
+                canvas.height = video.videoHeight;
+                
+                document.getElementById('info-dims').textContent = 
+                    `Video: ${video.videoWidth}x${video.videoHeight}`;
+                
+                posicionarZonas();
+            };
+            
+        } catch (error) {
+            alert('Error cámara: ' + error.message);
+        }
+    }
+    
+    async function iniciarOCR() {
+        try {
+            document.getElementById('resultado').textContent = 'Cargando OCR...';
+            
+            worker = await Tesseract.createWorker('eng', 1, {
+                logger: () => {}
+            });
+            
+            await worker.setParameters({
+                tessedit_char_whitelist: '0123456789',
+                tessedit_pageseg_mode: Tesseract.PSM.SINGLE_WORD
+            });
+            
+            document.getElementById('resultado').textContent = 'Listo ✓';
+            
+        } catch (error) {
+            document.getElementById('resultado').textContent = 'Error OCR';
+        }
+    }
+    
+    function posicionarZonas() {
+        const videoRect = video.getBoundingClientRect();
+        const area = CONFIG.billeteArea;
+        const esq = CONFIG.esquinaSize;
+        
+        // Área del billete en coordenadas de pantalla
+        const bx = videoRect.width * area.x;
+        const by = videoRect.height * area.y;
+        const bw = videoRect.width * area.width;
+        const bh = videoRect.height * area.height;
+        
+        // Tamaño de cada zona
+        const ew = bw * esq.width;
+        const eh = bh * esq.height;
+        
+        // Guía principal
+        const guia = document.getElementById('guia-billete');
+        guia.style.left = bx + 'px';
+        guia.style.top = by + 'px';
+        guia.style.width = bw + 'px';
+        guia.style.height = bh + 'px';
+        
+        // Posiciones de las 4 esquinas
+        const zonas = {
+            'tl': { left: bx, top: by },
+            'tr': { left: bx + bw - ew, top: by },
+            'bl': { left: bx, top: by + bh - eh },
+            'br': { left: bx + bw - ew, top: by + bh - eh }
+        };
+        
+        for (const [id, pos] of Object.entries(zonas)) {
+            const zona = document.getElementById('zona-' + id);
+            zona.style.left = pos.left + 'px';
+            zona.style.top = pos.top + 'px';
+            zona.style.width = ew + 'px';
+            zona.style.height = eh + 'px';
+        }
+        
+        console.log('Zonas posicionadas:', { bx, by, bw, bh, ew, eh });
+    }
+    
+    // ============================================
+    // DETECCIÓN
+    // ============================================
+    async function detectar() {
+        if (detectando || !worker) return;
+        detectando = true;
+        
+        document.getElementById('btn-detectar').disabled = true;
+        document.getElementById('btn-detectar').textContent = '⏳ Analizando...';
+        document.getElementById('resultado').textContent = 'Analizando...';
+        
+        // Reset zonas
+        document.querySelectorAll('.zona-busqueda').forEach(z => {
+            z.classList.remove('analizando', 'found');
+        });
+        
+        try {
+            // Capturar frame actual
+            ctx.drawImage(video, 0, 0);
+            
+            const resultado = await analizarTodasLasZonas();
+            
+            if (resultado) {
+                document.getElementById('resultado').innerHTML = 
+                    `<span class="text-green-400">$${resultado}</span>`;
+            } else {
+                document.getElementById('resultado').innerHTML = 
+                    `<span class="text-red-400">No detectado</span>`;
+            }
+            
+        } catch (error) {
+            console.error(error);
+            document.getElementById('resultado').textContent = 'Error';
+        }
+        
+        document.getElementById('btn-detectar').disabled = false;
+        document.getElementById('btn-detectar').textContent = '📸 DETECTAR (ver qué captura)';
+        detectando = false;
+    }
+    
+    async function analizarTodasLasZonas() {
+        const area = CONFIG.billeteArea;
+        const esq = CONFIG.esquinaSize;
+        
+        // IMPORTANTE: Usar dimensiones del CANVAS (no del video visual)
+        const canvasW = canvas.width;
+        const canvasH = canvas.height;
+        
+        // Área del billete en coordenadas del canvas
+        const bx = Math.floor(canvasW * area.x);
+        const by = Math.floor(canvasH * area.y);
+        const bw = Math.floor(canvasW * area.width);
+        const bh = Math.floor(canvasH * area.height);
+        
+        // Tamaño de cada zona
+        const ew = Math.floor(bw * esq.width);
+        const eh = Math.floor(bh * esq.height);
+        
+        console.log('Canvas:', canvasW, 'x', canvasH);
+        console.log('Billete área:', { bx, by, bw, bh });
+        console.log('Zona tamaño:', { ew, eh });
+        
+        const esquinas = [
+            { id: 'tl', x: bx, y: by },
+            { id: 'tr', x: bx + bw - ew, y: by },
+            { id: 'bl', x: bx, y: by + bh - eh },
+            { id: 'br', x: bx + bw - ew, y: by + bh - eh }
+        ];
+        
+        let denominacionEncontrada = null;
+        
+        for (const esqData of esquinas) {
+            // Marcar como analizando
+            document.getElementById('zona-' + esqData.id).classList.add('analizando');
+            
+            // Extraer imagen de esta zona
+            const tempCanvas = document.createElement('canvas');
+            tempCanvas.width = ew;
+            tempCanvas.height = eh;
+            const tempCtx = tempCanvas.getContext('2d');
+            
+            // CLAVE: Extraer del canvas principal
+            tempCtx.drawImage(
+                canvas,           // Fuente
+                esqData.x,        // x origen
+                esqData.y,        // y origen
+                ew, eh,           // ancho/alto a copiar
+                0, 0,             // x,y destino
+                ew, eh            // ancho/alto destino
+            );
+            
+            // Guardar copia original para debug
+            const imgOriginal = tempCtx.getImageData(0, 0, ew, eh);
+            
+            // Mostrar en debug (imagen original)
+            const dbgCanvas = document.getElementById('dbg-' + esqData.id);
+            dbgCanvas.width = ew;
+            dbgCanvas.height = eh;
+            dbgCanvas.getContext('2d').putImageData(imgOriginal, 0, 0);
+            
+            // Probar múltiples rotaciones
+            let textoMejor = '';
+            let denomMejor = null;
+            
+            for (const rot of [0, 180]) {  // Solo 0° y 180° para billetes
+                // Restaurar original
+                tempCtx.putImageData(imgOriginal, 0, 0);
+                
+                // Rotar si necesario
+                if (rot === 180) {
+                    rotar180(tempCtx, ew, eh);
+                }
+                
+                // Preprocesar (binarizar)
+                preprocesar(tempCtx, ew, eh);
+                
+                // OCR
+                const resultado = await worker.recognize(tempCanvas);
+                const texto = resultado.data.text.trim();
+                
+                console.log(`Zona ${esqData.id} rot${rot}:`, texto);
+                
+                // Buscar denominación
+                const denom = buscarDenominacion(texto);
+                
+                if (denom) {
+                    textoMejor = texto;
+                    denomMejor = denom;
+                    break;
+                }
+                
+                if (texto && !textoMejor) {
+                    textoMejor = texto;
+                }
+            }
+            
+            // Actualizar debug text
+            document.getElementById('txt-' + esqData.id).textContent = 
+                textoMejor ? `"${textoMejor}" ${denomMejor ? '→ $'+denomMejor : ''}` : '(vacío)';
+            
+            // Quitar analizando
+            document.getElementById('zona-' + esqData.id).classList.remove('analizando');
+            
+            if (denomMejor) {
+                denominacionEncontrada = denomMejor;
+                document.getElementById('zona-' + esqData.id).classList.add('found');
+                document.getElementById('txt-' + esqData.id).classList.add('text-green-400');
+                break;  // Encontramos, parar
+            }
+            
+            // Pequeña pausa para visualización
+            await new Promise(r => setTimeout(r, 100));
+        }
+        
+        return denominacionEncontrada;
+    }
+    
+    function rotar180(ctx, w, h) {
+        const imageData = ctx.getImageData(0, 0, w, h);
+        const data = imageData.data;
+        const rotated = new Uint8ClampedArray(data.length);
+        
+        for (let y = 0; y < h; y++) {
+            for (let x = 0; x < w; x++) {
+                const srcIdx = (y * w + x) * 4;
+                const dstIdx = ((h - 1 - y) * w + (w - 1 - x)) * 4;
+                rotated[dstIdx] = data[srcIdx];
+                rotated[dstIdx + 1] = data[srcIdx + 1];
+                rotated[dstIdx + 2] = data[srcIdx + 2];
+                rotated[dstIdx + 3] = data[srcIdx + 3];
+            }
+        }
+        
+        ctx.putImageData(new ImageData(rotated, w, h), 0, 0);
+    }
+    
+    function preprocesar(ctx, w, h) {
+        const imageData = ctx.getImageData(0, 0, w, h);
+        const data = imageData.data;
+        
+        // Binarización con umbral adaptativo simple
+        for (let i = 0; i < data.length; i += 4) {
+            const gris = data[i] * 0.299 + data[i+1] * 0.587 + data[i+2] * 0.114;
+            const valor = gris > 128 ? 255 : 0;
+            data[i] = valor;
+            data[i+1] = valor;
+            data[i+2] = valor;
+        }
+        
+        ctx.putImageData(imageData, 0, 0);
+    }
+    
+    function buscarDenominacion(texto) {
+        // Limpiar
+        let numeros = texto.replace(/\D/g, '');
+        
+        // Correcciones OCR
+        const corregido = texto
+            .replace(/[oO]/g, '0')
+            .replace(/[lI]/g, '1')
+            .replace(/[sS]/g, '5')
+            .replace(/[zZ]/g, '2')
+            .replace(/\D/g, '');
+        
+        // Buscar normal
+        for (const denom of CONFIG.denominaciones) {
+            if (numeros.includes(denom) || corregido.includes(denom)) {
+                return denom;
+            }
+        }
+        
+        // Buscar invertido (espejo)
+        const invertido = numeros.split('').reverse().join('');
+        for (const denom of CONFIG.denominaciones) {
+            if (invertido.includes(denom)) {
+                return denom;
+            }
+        }
+        
+        return null;
+    }
+    
+    // Reposicionar al cambiar tamaño
+    window.addEventListener('resize', () => {
+        if (video.videoWidth) posicionarZonas();
+    });
+    </script>
+    
+</body>
+</html>
