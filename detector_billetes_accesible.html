@@ -1,0 +1,846 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Detector de Billetes MX - Accesible</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+    <style>
+        * { -webkit-tap-highlight-color: transparent; }
+        body {
+            background: #0f172a;
+            min-height: 100vh;
+            touch-action: manipulation;
+        }
+        
+        /* Modo normal */
+        .modo-normal .panel-visual { display: block; }
+        .modo-normal .panel-accesible { display: none; }
+        
+        /* Modo accesible - pantalla simplificada */
+        .modo-accesible .panel-visual { display: none; }
+        .modo-accesible .panel-accesible { display: flex; }
+        .modo-accesible body { background: #000; }
+        
+        .glass {
+            background: rgba(30, 41, 59, 0.8);
+            backdrop-filter: blur(12px);
+            border: 1px solid rgba(99, 102, 241, 0.2);
+        }
+        
+        #guia-billete {
+            position: absolute;
+            border: 3px dashed rgba(100, 116, 139, 0.5);
+            border-radius: 12px;
+            pointer-events: none;
+            transition: all 0.3s;
+        }
+        #guia-billete.analizando {
+            border-color: #f59e0b;
+            border-style: solid;
+        }
+        #guia-billete.exito {
+            border-color: #22c55e;
+            border-style: solid;
+            box-shadow: 0 0 30px rgba(34, 197, 94, 0.5);
+        }
+        #guia-billete.error {
+            border-color: #ef4444;
+            border-style: solid;
+        }
+        
+        .zona-busqueda {
+            position: absolute;
+            border: 2px solid rgba(6, 182, 212, 0.4);
+            background: rgba(6, 182, 212, 0.05);
+            border-radius: 4px;
+            pointer-events: none;
+        }
+        
+        .btn-grande {
+            min-height: 120px;
+            font-size: 1.5rem;
+            font-weight: bold;
+            border-radius: 20px;
+            transition: all 0.2s;
+        }
+        .btn-grande:active {
+            transform: scale(0.98);
+        }
+        
+        /* Panel accesible - solo un botón enorme */
+        .panel-accesible {
+            position: fixed;
+            inset: 0;
+            background: #000;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+            gap: 30px;
+        }
+        
+        .btn-accesible {
+            width: 100%;
+            max-width: 400px;
+            height: 50vh;
+            max-height: 300px;
+            border-radius: 30px;
+            font-size: 2rem;
+            font-weight: bold;
+            border: 4px solid;
+        }
+        
+        .resultado-accesible {
+            font-size: 3rem;
+            font-weight: bold;
+            text-align: center;
+            min-height: 100px;
+        }
+        
+        @keyframes pulse-success {
+            0%, 100% { box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.7); }
+            50% { box-shadow: 0 0 0 20px rgba(34, 197, 94, 0); }
+        }
+        .pulse-success {
+            animation: pulse-success 0.5s ease-out 2;
+        }
+    </style>
+</head>
+<body class="text-white modo-normal" id="body">
+    
+    <!-- ==================== PANEL VISUAL (Normal) ==================== -->
+    <div class="panel-visual">
+        <div class="container mx-auto px-4 py-4 max-w-5xl">
+            
+            <!-- Header -->
+            <header class="text-center mb-4">
+                <h1 class="text-2xl font-bold bg-gradient-to-r from-cyan-400 to-emerald-400 bg-clip-text text-transparent">
+                    💵 Detector de Billetes MX
+                </h1>
+                <p class="text-slate-400 text-sm">Accesible • Múltiple confirmación • Audio</p>
+            </header>
+            
+            <!-- Controles de modo -->
+            <div class="flex justify-center gap-3 mb-4">
+                <button onclick="toggleModoAccesible()" 
+                        class="px-4 py-2 bg-purple-600 hover:bg-purple-500 rounded-xl text-sm font-medium">
+                    👁️ Modo Accesible
+                </button>
+                <button onclick="toggleAudio()" id="btn-audio"
+                        class="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 rounded-xl text-sm font-medium">
+                    🔊 Audio ON
+                </button>
+            </div>
+            
+            <div class="grid lg:grid-cols-3 gap-4">
+                
+                <!-- Video Section -->
+                <div class="lg:col-span-2">
+                    <div class="glass rounded-2xl p-3">
+                        <div class="relative" id="video-container">
+                            <video id="video" autoplay playsinline class="w-full rounded-xl bg-black"></video>
+                            
+                            <div id="guia-billete">
+                                <div class="absolute inset-0 flex items-center justify-center">
+                                    <span id="guia-texto" class="bg-black/70 px-4 py-2 rounded-lg text-sm">
+                                        Coloca un billete aquí
+                                    </span>
+                                </div>
+                            </div>
+                            
+                            <!-- Zonas de búsqueda -->
+                            <div id="zona-tl" class="zona-busqueda"></div>
+                            <div id="zona-tr" class="zona-busqueda"></div>
+                            <div id="zona-bl" class="zona-busqueda"></div>
+                            <div id="zona-br" class="zona-busqueda"></div>
+                            
+                            <!-- Estado -->
+                            <div class="absolute top-3 left-3 flex items-center gap-2 px-3 py-1.5 rounded-full bg-black/70">
+                                <div id="estado-dot" class="w-2.5 h-2.5 rounded-full bg-slate-500"></div>
+                                <span id="estado-text" class="text-xs">Iniciando...</span>
+                            </div>
+                            
+                            <!-- Contador de confirmaciones -->
+                            <div class="absolute top-3 right-3 px-3 py-1.5 rounded-full bg-black/70">
+                                <span class="text-xs text-slate-400">Confirmaciones: </span>
+                                <span id="contador-confirmaciones" class="text-xs text-cyan-400 font-bold">0/3</span>
+                            </div>
+                        </div>
+                        
+                        <!-- Botón grande de captura -->
+                        <button onclick="detectarManual()" id="btn-detectar"
+                                class="w-full mt-4 btn-grande bg-gradient-to-r from-cyan-600 to-emerald-600 hover:from-cyan-500 hover:to-emerald-500 text-white">
+                            📸 DETECTAR BILLETE
+                            <span class="block text-sm font-normal opacity-80">Presiona o usa ESPACIO</span>
+                        </button>
+                    </div>
+                </div>
+                
+                <!-- Panel Derecho -->
+                <div class="space-y-4">
+                    
+                    <!-- Resultado Principal -->
+                    <div class="glass rounded-2xl p-4" id="panel-resultado">
+                        <div id="resultado-contenido" class="text-center py-4">
+                            <div class="text-5xl mb-3">💵</div>
+                            <p class="text-slate-400">Esperando billete...</p>
+                        </div>
+                    </div>
+                    
+                    <!-- Historial -->
+                    <div class="glass rounded-2xl p-4">
+                        <div class="flex justify-between items-center mb-2">
+                            <h3 class="text-sm font-semibold text-slate-400">Historial</h3>
+                            <span class="text-emerald-400 font-bold" id="total-acumulado">$0</span>
+                        </div>
+                        <div id="historial" class="space-y-1 max-h-32 overflow-y-auto">
+                            <p class="text-slate-600 text-xs text-center py-2">Sin detecciones</p>
+                        </div>
+                        <button onclick="resetTotal()" class="w-full mt-2 py-1 text-xs text-slate-500 hover:text-slate-400">
+                            🔄 Limpiar historial
+                        </button>
+                    </div>
+                    
+                    <!-- Info -->
+                    <div class="glass rounded-2xl p-4 text-xs text-slate-500">
+                        <p><strong class="text-slate-400">Seguridad:</strong> Requiere 3 lecturas iguales para confirmar</p>
+                        <p class="mt-1"><strong class="text-slate-400">Audio:</strong> Anuncia resultados por voz</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- ==================== PANEL ACCESIBLE (Ciego) ==================== -->
+    <div class="panel-accesible hidden">
+        <video id="video-accesible" autoplay playsinline class="fixed top-0 left-0 w-1 h-1 opacity-0"></video>
+        
+        <div id="resultado-accesible" class="resultado-accesible text-white" aria-live="assertive">
+            Toca el botón para detectar
+        </div>
+        
+        <button onclick="detectarManual()" id="btn-accesible"
+                class="btn-accesible bg-cyan-700 border-cyan-400 text-white active:bg-cyan-600">
+            👆 TOCAR PARA<br>DETECTAR BILLETE
+        </button>
+        
+        <button onclick="toggleModoAccesible()" 
+                class="px-6 py-3 bg-slate-800 border border-slate-600 rounded-xl text-slate-300">
+            ← Volver al modo visual
+        </button>
+    </div>
+    
+    <canvas id="canvas" class="hidden"></canvas>
+    
+    <script>
+    // ============================================
+    // CONFIGURACIÓN
+    // ============================================
+    const CONFIG = {
+        billeteArea: { x: 0.1, y: 0.12, width: 0.8, height: 0.76 },
+        esquinaSize: { width: 0.22, height: 0.28 },
+        
+        // Detección automática desactivada - solo manual para más control
+        cooldownDeteccion: 3000,
+        
+        // SEGURIDAD: Múltiples confirmaciones
+        confirmacionesRequeridas: 3,  // Necesita 3 lecturas iguales
+        tiempoMaxConfirmacion: 4000,  // Dentro de 4 segundos
+        
+        // OCR
+        denominaciones: ['1000', '500', '200', '100', '50', '20'],
+        
+        colores: {
+            '20': { bg: 'bg-blue-500/20', text: 'text-blue-400', color: '#3b82f6', nombre: 'veinte' },
+            '50': { bg: 'bg-pink-500/20', text: 'text-pink-400', color: '#ec4899', nombre: 'cincuenta' },
+            '100': { bg: 'bg-orange-500/20', text: 'text-orange-400', color: '#f97316', nombre: 'cien' },
+            '200': { bg: 'bg-green-500/20', text: 'text-green-400', color: '#22c55e', nombre: 'doscientos' },
+            '500': { bg: 'bg-cyan-500/20', text: 'text-cyan-400', color: '#06b6d4', nombre: 'quinientos' },
+            '1000': { bg: 'bg-purple-500/20', text: 'text-purple-400', color: '#a855f7', nombre: 'mil' }
+        }
+    };
+    
+    // ============================================
+    // ESTADO
+    // ============================================
+    let video, canvas, ctx;
+    let worker = null;
+    let detectando = false;
+    let ultimaDeteccion = 0;
+    let historial = [];
+    let totalAcumulado = 0;
+    
+    // Audio
+    let audioHabilitado = true;
+    
+    // Modo accesible
+    let modoAccesible = false;
+    
+    // Sistema de confirmaciones
+    let confirmaciones = [];  // Array de {denominacion, timestamp}
+    
+    // ============================================
+    // AUDIO / VOZ
+    // ============================================
+    function hablar(texto, urgente = false) {
+        if (!audioHabilitado) return;
+        
+        // Cancelar habla anterior si es urgente
+        if (urgente) {
+            speechSynthesis.cancel();
+        }
+        
+        const utterance = new SpeechSynthesisUtterance(texto);
+        utterance.lang = 'es-MX';
+        utterance.rate = 1.0;
+        utterance.pitch = 1.0;
+        
+        speechSynthesis.speak(utterance);
+    }
+    
+    function vibrar(patron = [100]) {
+        if (navigator.vibrate) {
+            navigator.vibrate(patron);
+        }
+    }
+    
+    function toggleAudio() {
+        audioHabilitado = !audioHabilitado;
+        const btn = document.getElementById('btn-audio');
+        
+        if (audioHabilitado) {
+            btn.textContent = '🔊 Audio ON';
+            btn.className = 'px-4 py-2 bg-emerald-600 hover:bg-emerald-500 rounded-xl text-sm font-medium';
+            hablar('Audio activado');
+        } else {
+            btn.textContent = '🔇 Audio OFF';
+            btn.className = 'px-4 py-2 bg-slate-600 hover:bg-slate-500 rounded-xl text-sm font-medium';
+        }
+    }
+    
+    // ============================================
+    // MODO ACCESIBLE
+    // ============================================
+    function toggleModoAccesible() {
+        modoAccesible = !modoAccesible;
+        const body = document.getElementById('body');
+        
+        if (modoAccesible) {
+            body.classList.remove('modo-normal');
+            body.classList.add('modo-accesible');
+            document.querySelector('.panel-accesible').classList.remove('hidden');
+            
+            // Usar el video accesible
+            const videoAcc = document.getElementById('video-accesible');
+            if (video.srcObject) {
+                videoAcc.srcObject = video.srcObject;
+            }
+            
+            hablar('Modo accesible activado. Toca el botón grande para detectar billetes.', true);
+        } else {
+            body.classList.add('modo-normal');
+            body.classList.remove('modo-accesible');
+            document.querySelector('.panel-accesible').classList.add('hidden');
+            
+            hablar('Modo visual activado', true);
+        }
+    }
+    
+    // ============================================
+    // INICIALIZACIÓN
+    // ============================================
+    document.addEventListener('DOMContentLoaded', async () => {
+        video = document.getElementById('video');
+        canvas = document.getElementById('canvas');
+        ctx = canvas.getContext('2d');
+        
+        await iniciarCamara();
+        await iniciarOCR();
+        
+        // Tecla espacio
+        document.addEventListener('keydown', (e) => {
+            if (e.code === 'Space') {
+                e.preventDefault();
+                detectarManual();
+            }
+        });
+        
+        // Actualizar UI
+        requestAnimationFrame(actualizarVideo);
+    });
+    
+    async function iniciarCamara() {
+        try {
+            actualizarEstado('Cámara...', 'yellow');
+            
+            const stream = await navigator.mediaDevices.getUserMedia({
+                video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: 'environment' }
+            });
+            
+            video.srcObject = stream;
+            
+            video.onloadedmetadata = () => {
+                canvas.width = video.videoWidth;
+                canvas.height = video.videoHeight;
+                posicionarElementos();
+            };
+            
+        } catch (error) {
+            actualizarEstado('Error cámara', 'red');
+            hablar('Error al acceder a la cámara');
+        }
+    }
+    
+    async function iniciarOCR() {
+        try {
+            actualizarEstado('Cargando OCR...', 'yellow');
+            hablar('Cargando sistema de reconocimiento');
+            
+            worker = await Tesseract.createWorker('eng', 1, {
+                logger: () => {}
+            });
+            
+            await worker.setParameters({
+                tessedit_char_whitelist: '0123456789',
+                tessedit_pageseg_mode: Tesseract.PSM.SINGLE_WORD
+            });
+            
+            actualizarEstado('Listo', 'green');
+            hablar('Sistema listo. Coloca un billete y toca el botón para detectar.');
+            
+        } catch (error) {
+            actualizarEstado('Error OCR', 'red');
+            hablar('Error al cargar el sistema');
+        }
+    }
+    
+    function actualizarVideo() {
+        if (video.videoWidth) {
+            ctx.drawImage(video, 0, 0);
+        }
+        requestAnimationFrame(actualizarVideo);
+    }
+    
+    function posicionarElementos() {
+        const rect = video.getBoundingClientRect();
+        const area = CONFIG.billeteArea;
+        const esq = CONFIG.esquinaSize;
+        
+        const guia = document.getElementById('guia-billete');
+        const gx = rect.width * area.x;
+        const gy = rect.height * area.y;
+        const gw = rect.width * area.width;
+        const gh = rect.height * area.height;
+        
+        guia.style.left = gx + 'px';
+        guia.style.top = gy + 'px';
+        guia.style.width = gw + 'px';
+        guia.style.height = gh + 'px';
+        
+        const ew = gw * esq.width;
+        const eh = gh * esq.height;
+        
+        const posiciones = {
+            'tl': { left: gx, top: gy },
+            'tr': { left: gx + gw - ew, top: gy },
+            'bl': { left: gx, top: gy + gh - eh },
+            'br': { left: gx + gw - ew, top: gy + gh - eh }
+        };
+        
+        for (const [id, pos] of Object.entries(posiciones)) {
+            const zona = document.getElementById('zona-' + id);
+            if (zona) {
+                zona.style.left = pos.left + 'px';
+                zona.style.top = pos.top + 'px';
+                zona.style.width = ew + 'px';
+                zona.style.height = eh + 'px';
+            }
+        }
+    }
+    
+    // ============================================
+    // DETECCIÓN MANUAL
+    // ============================================
+    async function detectarManual() {
+        if (detectando || !worker) return;
+        
+        // Cooldown
+        const now = Date.now();
+        if (now - ultimaDeteccion < 1000) return;
+        
+        detectando = true;
+        ultimaDeteccion = now;
+        
+        // Feedback inmediato
+        hablar('Analizando', true);
+        vibrar([50]);
+        
+        actualizarEstado('Analizando...', 'yellow');
+        document.getElementById('guia-billete').classList.add('analizando');
+        document.getElementById('guia-texto').textContent = 'Analizando...';
+        
+        // Deshabilitar botón
+        const btn = document.getElementById('btn-detectar');
+        if (btn) btn.disabled = true;
+        
+        try {
+            const resultado = await analizarEsquinas();
+            
+            if (resultado.denominacion) {
+                // Agregar a confirmaciones
+                agregarConfirmacion(resultado.denominacion);
+            } else {
+                // No se encontró nada
+                mostrarNoDetectado();
+            }
+            
+        } catch (error) {
+            console.error('Error:', error);
+            mostrarError();
+        }
+        
+        document.getElementById('guia-billete').classList.remove('analizando');
+        document.getElementById('guia-texto').textContent = 'Coloca un billete aquí';
+        if (btn) btn.disabled = false;
+        detectando = false;
+    }
+    
+    // ============================================
+    // SISTEMA DE CONFIRMACIONES
+    // ============================================
+    function agregarConfirmacion(denominacion) {
+        const ahora = Date.now();
+        
+        // Limpiar confirmaciones viejas
+        confirmaciones = confirmaciones.filter(c => 
+            ahora - c.timestamp < CONFIG.tiempoMaxConfirmacion
+        );
+        
+        // Agregar nueva
+        confirmaciones.push({ denominacion, timestamp: ahora });
+        
+        // Contar confirmaciones de esta denominación
+        const cuenta = confirmaciones.filter(c => c.denominacion === denominacion).length;
+        
+        // Actualizar UI
+        document.getElementById('contador-confirmaciones').textContent = 
+            `${Math.min(cuenta, CONFIG.confirmacionesRequeridas)}/${CONFIG.confirmacionesRequeridas}`;
+        
+        if (cuenta >= CONFIG.confirmacionesRequeridas) {
+            // ¡CONFIRMADO!
+            confirmarDeteccion(denominacion);
+            confirmaciones = [];  // Reset
+        } else {
+            // Necesita más confirmaciones
+            mostrarParcial(denominacion, cuenta);
+        }
+    }
+    
+    function confirmarDeteccion(denominacion) {
+        const info = CONFIG.colores[denominacion];
+        
+        // Feedback exitoso
+        vibrar([100, 50, 100]);  // Vibración de éxito
+        hablar(`Billete de ${info.nombre} pesos`, true);
+        
+        // Visual
+        const guia = document.getElementById('guia-billete');
+        guia.classList.remove('analizando');
+        guia.classList.add('exito');
+        
+        const panel = document.getElementById('panel-resultado');
+        panel.classList.add('pulse-success');
+        
+        setTimeout(() => {
+            guia.classList.remove('exito');
+            panel.classList.remove('pulse-success');
+        }, 1500);
+        
+        // Mostrar resultado
+        const contenido = document.getElementById('resultado-contenido');
+        contenido.innerHTML = `
+            <div class="text-5xl font-bold mb-2" style="color: ${info.color}">
+                $${denominacion}
+            </div>
+            <p class="text-green-400 font-bold text-lg">✓ CONFIRMADO</p>
+            <p class="text-slate-500 text-xs mt-1">3/3 lecturas coinciden</p>
+        `;
+        
+        // Modo accesible
+        if (modoAccesible) {
+            document.getElementById('resultado-accesible').innerHTML = `
+                <span style="color: ${info.color}">$${denominacion}</span>
+                <br><span class="text-green-400">✓ Confirmado</span>
+            `;
+        }
+        
+        // Reset contador
+        document.getElementById('contador-confirmaciones').textContent = '0/3';
+        
+        // Agregar al historial
+        agregarHistorial(denominacion);
+        totalAcumulado += parseInt(denominacion);
+        document.getElementById('total-acumulado').textContent = '$' + totalAcumulado.toLocaleString();
+        
+        actualizarEstado('Confirmado ✓', 'green');
+    }
+    
+    function mostrarParcial(denominacion, cuenta) {
+        const info = CONFIG.colores[denominacion];
+        
+        // Feedback parcial
+        vibrar([30]);
+        hablar(`Posible ${info.nombre}. ${CONFIG.confirmacionesRequeridas - cuenta} más para confirmar.`);
+        
+        const contenido = document.getElementById('resultado-contenido');
+        contenido.innerHTML = `
+            <div class="text-4xl font-bold mb-2 opacity-60" style="color: ${info.color}">
+                $${denominacion}?
+            </div>
+            <p class="text-amber-400 font-medium">⏳ Verificando...</p>
+            <p class="text-slate-500 text-xs mt-1">${cuenta}/${CONFIG.confirmacionesRequeridas} lecturas</p>
+        `;
+        
+        if (modoAccesible) {
+            document.getElementById('resultado-accesible').innerHTML = `
+                Posible $${denominacion}<br>
+                <span class="text-amber-400">Verificando... (${cuenta}/3)</span>
+            `;
+        }
+        
+        actualizarEstado(`Verificando (${cuenta}/3)...`, 'cyan');
+    }
+    
+    function mostrarNoDetectado() {
+        hablar('No se pudo identificar. Intente nuevamente.', true);
+        vibrar([200]);
+        
+        const guia = document.getElementById('guia-billete');
+        guia.classList.add('error');
+        setTimeout(() => guia.classList.remove('error'), 500);
+        
+        const contenido = document.getElementById('resultado-contenido');
+        contenido.innerHTML = `
+            <div class="text-4xl mb-2">❌</div>
+            <p class="text-red-400 font-bold">No detectado</p>
+            <p class="text-slate-500 text-xs mt-1">Ajuste el billete e intente de nuevo</p>
+        `;
+        
+        if (modoAccesible) {
+            document.getElementById('resultado-accesible').innerHTML = `
+                <span class="text-red-400">❌ No detectado</span><br>
+                Intente de nuevo
+            `;
+        }
+        
+        // Reset confirmaciones
+        confirmaciones = [];
+        document.getElementById('contador-confirmaciones').textContent = '0/3';
+        
+        actualizarEstado('No detectado', 'red');
+    }
+    
+    function mostrarError() {
+        hablar('Error en el sistema. Intente de nuevo.', true);
+        actualizarEstado('Error', 'red');
+    }
+    
+    // ============================================
+    // ANÁLISIS OCR
+    // ============================================
+    async function analizarEsquinas() {
+        const area = CONFIG.billeteArea;
+        const esq = CONFIG.esquinaSize;
+        
+        const bx = Math.floor(canvas.width * area.x);
+        const by = Math.floor(canvas.height * area.y);
+        const bw = Math.floor(canvas.width * area.width);
+        const bh = Math.floor(canvas.height * area.height);
+        const ew = Math.floor(bw * esq.width);
+        const eh = Math.floor(bh * esq.height);
+        
+        const esquinas = [
+            { id: 'tl', x: bx, y: by },
+            { id: 'tr', x: bx + bw - ew, y: by },
+            { id: 'bl', x: bx, y: by + bh - eh },
+            { id: 'br', x: bx + bw - ew, y: by + bh - eh }
+        ];
+        
+        let denominacionEncontrada = null;
+        
+        for (const esqData of esquinas) {
+            const tempCanvas = document.createElement('canvas');
+            tempCanvas.width = ew;
+            tempCanvas.height = eh;
+            const tempCtx = tempCanvas.getContext('2d');
+            tempCtx.drawImage(canvas, esqData.x, esqData.y, ew, eh, 0, 0, ew, eh);
+            
+            const imagenOriginal = tempCtx.getImageData(0, 0, ew, eh);
+            
+            // Probar rotaciones: 0°, 90°, 180°, 270°
+            for (const rot of [0, 90, 180, 270]) {
+                tempCtx.putImageData(imagenOriginal, 0, 0);
+                
+                if (rot > 0) {
+                    rotarCanvas(tempCtx, ew, eh, rot);
+                }
+                
+                preprocesarImagen(tempCtx);
+                
+                const resultado = await worker.recognize(tempCanvas);
+                const texto = resultado.data.text.trim();
+                const denom = extraerDenominacion(texto);
+                
+                if (denom) {
+                    denominacionEncontrada = denom;
+                    break;
+                }
+            }
+            
+            if (denominacionEncontrada) break;
+        }
+        
+        return { denominacion: denominacionEncontrada };
+    }
+    
+    function rotarCanvas(ctx, w, h, grados) {
+        const imageData = ctx.getImageData(0, 0, w, h);
+        const data = imageData.data;
+        
+        let nuevoW = w, nuevoH = h;
+        if (grados === 90 || grados === 270) {
+            nuevoW = h;
+            nuevoH = w;
+        }
+        
+        const rotated = new Uint8ClampedArray(data.length);
+        
+        for (let y = 0; y < h; y++) {
+            for (let x = 0; x < w; x++) {
+                const srcIdx = (y * w + x) * 4;
+                let dstX, dstY;
+                
+                switch (grados) {
+                    case 90: dstX = h - 1 - y; dstY = x; break;
+                    case 180: dstX = w - 1 - x; dstY = h - 1 - y; break;
+                    case 270: dstX = y; dstY = w - 1 - x; break;
+                    default: dstX = x; dstY = y;
+                }
+                
+                const dstIdx = (dstY * nuevoW + dstX) * 4;
+                rotated[dstIdx] = data[srcIdx];
+                rotated[dstIdx + 1] = data[srcIdx + 1];
+                rotated[dstIdx + 2] = data[srcIdx + 2];
+                rotated[dstIdx + 3] = data[srcIdx + 3];
+            }
+        }
+        
+        if (grados === 90 || grados === 270) {
+            ctx.canvas.width = nuevoW;
+            ctx.canvas.height = nuevoH;
+        }
+        
+        ctx.putImageData(new ImageData(rotated, nuevoW, nuevoH), 0, 0);
+    }
+    
+    function preprocesarImagen(ctx) {
+        const w = ctx.canvas.width;
+        const h = ctx.canvas.height;
+        const imageData = ctx.getImageData(0, 0, w, h);
+        const data = imageData.data;
+        
+        for (let i = 0; i < data.length; i += 4) {
+            const gris = data[i] * 0.299 + data[i+1] * 0.587 + data[i+2] * 0.114;
+            const valor = gris > 130 ? 255 : 0;
+            data[i] = valor;
+            data[i+1] = valor;
+            data[i+2] = valor;
+        }
+        
+        ctx.putImageData(imageData, 0, 0);
+    }
+    
+    function extraerDenominacion(texto) {
+        let numeros = texto.replace(/\D/g, '');
+        
+        const corregido = texto
+            .replace(/[oO]/g, '0')
+            .replace(/[lI]/g, '1')
+            .replace(/[sS]/g, '5')
+            .replace(/[zZ]/g, '2')
+            .replace(/\D/g, '');
+        
+        // Buscar normal
+        for (const denom of CONFIG.denominaciones) {
+            if (numeros.includes(denom) || corregido.includes(denom)) {
+                return denom;
+            }
+        }
+        
+        // Buscar invertido
+        const invertido = numeros.split('').reverse().join('');
+        const invertidoCorr = corregido.split('').reverse().join('');
+        
+        for (const denom of CONFIG.denominaciones) {
+            if (invertido.includes(denom) || invertidoCorr.includes(denom)) {
+                return denom;
+            }
+        }
+        
+        return null;
+    }
+    
+    // ============================================
+    // UI
+    // ============================================
+    function actualizarEstado(texto, color) {
+        document.getElementById('estado-text').textContent = texto;
+        const dot = document.getElementById('estado-dot');
+        dot.className = 'w-2.5 h-2.5 rounded-full';
+        
+        const colores = {
+            green: 'bg-green-500',
+            yellow: 'bg-yellow-500',
+            red: 'bg-red-500',
+            cyan: 'bg-cyan-500'
+        };
+        dot.classList.add(colores[color] || 'bg-slate-500');
+    }
+    
+    function agregarHistorial(denom) {
+        const hora = new Date().toLocaleTimeString('es-MX', { 
+            hour: '2-digit', minute: '2-digit', second: '2-digit' 
+        });
+        
+        historial.unshift({ denom, hora });
+        if (historial.length > 10) historial.pop();
+        
+        const container = document.getElementById('historial');
+        container.innerHTML = historial.map(item => {
+            const info = CONFIG.colores[item.denom];
+            return `
+                <div class="flex items-center justify-between p-1.5 ${info.bg} rounded-lg">
+                    <span class="${info.text} font-bold text-sm">$${item.denom}</span>
+                    <span class="text-slate-500 text-xs">${item.hora}</span>
+                </div>
+            `;
+        }).join('');
+    }
+    
+    function resetTotal() {
+        totalAcumulado = 0;
+        document.getElementById('total-acumulado').textContent = '$0';
+        historial = [];
+        document.getElementById('historial').innerHTML = '<p class="text-slate-600 text-xs text-center py-2">Sin detecciones</p>';
+        confirmaciones = [];
+        document.getElementById('contador-confirmaciones').textContent = '0/3';
+        hablar('Historial limpiado');
+    }
+    
+    window.addEventListener('resize', posicionarElementos);
+    </script>
+    
+</body>
+</html>
